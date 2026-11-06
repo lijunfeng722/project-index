@@ -201,6 +201,42 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(report["errors"])
         self.assertEqual(report["checked_commits"], 1)
 
+    def test_push_with_unavailable_before_uses_default_branch_baseline(self):
+        baseline = self.commit("existing upstream history")
+        self.command(self.target, "update-ref", "refs/remotes/origin/main", baseline)
+        head = self.commit("功能：压缩后的提交")
+        report = policy.event_checks(self.target, {"before": "f" * 40, "after": head,
+                  "ref": "refs/heads/feature", "repository": {"default_branch": "main"}})
+        self.assertFalse(report["errors"])
+        self.assertEqual(report["checked_commits"], 1)
+
+    def test_default_branch_force_push_checks_all_commits_after_available_before(self):
+        baseline = self.commit("existing upstream history")
+        before = self.commit("old branch tip")
+        self.command(self.target, "checkout", "--detach", baseline)
+        intermediate = self.commit("new intermediate commit")
+        head = self.commit("修复：新分支末端提交")
+        self.command(self.target, "update-ref", "refs/remotes/origin/main", head)
+        report = policy.event_checks(self.target, {"before": before, "after": head,
+                  "ref": "refs/heads/main", "repository": {"default_branch": "main"}})
+        self.assertEqual(report["checked_commits"], 2)
+        self.assertEqual(report["errors"],
+                         ["commit_subject_requires_chinese:" + intermediate[:12]])
+
+    def test_default_branch_push_without_available_scope_has_public_error(self):
+        head = self.commit("修复：当前提交")
+        self.command(self.target, "update-ref", "refs/remotes/origin/main", head)
+        event = {"before": "f" * 40, "after": head, "ref": "refs/heads/main",
+                 "repository": {"default_branch": "main"}}
+        event_path = self.root / "event.json"
+        event_path.write_text(json.dumps(event))
+        result = subprocess.run(
+            [sys.executable, str(self.target / policy.CHECKER), "check",
+             "--event-file", str(event_path)], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout)["errors"],
+                         ["event_commit_scope_unavailable"])
+
     def test_first_import_does_not_rescan_history_and_unknown_scope_is_refused(self):
         self.commit("existing imported history")
         head = self.commit("维护：首次接入规则")
